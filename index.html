@@ -374,8 +374,15 @@ function toggleTech(t) {
   if (!ev || !ev.notes.length) { toast("Erst eine Note auswählen"); return; }
   const n = ev.notes.find(n => n.s === cur.s) || ev.notes[0];
   snapshot();
+  if (t === "slide" || t === "slideIn") {
+    // cycle: off -> up -> down -> off  (old "true" counts as up)
+    const next = !n[t] ? "up" : (n[t] === "down" ? null : "down");
+    if (t === "slide") { delete n.hammer; delete n.pull; }
+    if (next) n[t] = next; else delete n[t];
+    touched(); render(); return;
+  }
   const on = !n[t];
-  if (["slide", "hammer", "pull"].includes(t)) { delete n.slide; delete n.hammer; delete n.pull; }
+  if (["hammer", "pull"].includes(t)) { delete n.slide; delete n.hammer; delete n.pull; }
   if (on) n[t] = true; else delete n[t];
   touched(); render();
 }
@@ -744,8 +751,8 @@ function drawConnections(flat) {
         }
       }
       if (n.slideIn) {
-        const bx = n.x - n.half - 1;
-        el("line", { x1: bx - 16, x2: bx, y1: n.y + 3, y2: n.y - 3, ...ink }, g);
+        const bx = n.x - n.half - 1, upIn = n.slideIn !== "down";
+        el("line", { x1: bx - 16, x2: bx, y1: n.y + (upIn ? 3 : -3), y2: n.y + (upIn ? -3 : 3), ...ink }, g);
       }
       if (!(n.slide || n.hammer || n.pull)) continue;
       const tn = sameRow ? nx.notes.find(o => o.s === n.s) : null;
@@ -756,6 +763,7 @@ function drawConnections(flat) {
           bx = tn ? tn.x - tn.half - 1 : nx.x - Math.max(...nx.notes.map(o => o.half || 5)) - 2;
           if (tn) up = (parseInt(tn.f) || 0) >= (parseInt(n.f) || 0);
         } else bx = e.row.x1 - 4;
+        if (n.slide === "up") up = true; else if (n.slide === "down") up = false;   // explicit direction wins
         if (bx > ax) el("line", { x1: ax, x2: bx, y1: n.y + (up ? 3 : -3), y2: n.y + (up ? -3 : 3), ...ink }, g);
       } else {
         const sx = n.x, ex = tn ? tn.x : Math.min(n.x + 26, e.row.x1);
@@ -898,6 +906,9 @@ function updatePanel() {
   const ev = techEvent();
   const n = ev && (ev.notes.find(n => n.s === cur.s) || ev.notes[0]);
   document.querySelectorAll("[data-tech]").forEach(b => b.classList.toggle("on", !!(n && n[b.dataset.tech])));
+  const dn = k => n && n[k] === "down";
+  document.querySelector('[data-tech="slide"]').textContent = dn("slide") ? "Slide ↘" : "Slide ↗";
+  document.querySelector('[data-tech="slideIn"]').textContent = dn("slideIn") ? "↘ ein" : "↗ ein";
   document.documentElement.style.setProperty("--panel-h", $("panel").offsetHeight + "px");
 }
 
@@ -1022,7 +1033,7 @@ function helpDialog() {
       p("Bünde 10–24: erst 1 bzw. 2 und dann schnell (innerhalb ~1 Sekunde) die zweite Ziffer tippen."),
       p("Eine vorhandene Note antippen = auswählen. Dann ändern Ziffern den Bund, Notenwert-Knöpfe den Rhythmus, ⌫ löscht sie. Zwischen zwei Noten tippen = dort einfügen. Akkord: Note antippen, andere Saite wählen, Ziffer tippen."),
       p("Haltebogen: Note eingeben, dann den Notenwert wählen, um den sie verlängert werden soll (z. B. 1/4), und „Halten ⌒“ tippen. Angezeigt wird ein Bogen, darunter der Rhythmus der Haltedauer. Mehrfach tippen verlängert weiter."),
-      p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite."),
+      p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite. Slide-Knöpfe mehrfach tippen: ↗ aufwärts → ↘ abwärts → aus."),
       p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen, mehrere Takte kopieren und an anderer Stelle einfügen sowie einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
       p("„▶ Spielen“: Vollbild mit halbseitigem Umblättern – die gerade freie Bildschirmhälfte zeigt schon die Fortsetzung (blauer Balken = hier weiterlesen). Weiter per Pedal (Pfeiltasten, Bild ab, Leertaste) oder Antippen rechts, zurück per Pedal oder Antippen im linken Drittel. Wiederholungen sind ausgeschrieben, A−/A+ ändert die Größe, ✕ beendet. Der Bildschirm bleibt an."),
       p("„Lesen“ zeigt das Blatt ohne Eingabefeld – dort auch Wiederholungen ausgeschrieben und Drucken. ↶ macht den letzten Schritt rückgängig."),
@@ -1202,14 +1213,14 @@ function asciiToItems(text) {
         const bIsNext = b && nextCol !== undefined && b.col <= nextCol + 1;
         const tail = body.slice(a.end, b ? b.col : body.length);
         const lead = tail.replace(/^[-\s)~]*/, "")[0];
-        if (lead === "/" || lead === "\\") a.slide = true;
+        if (lead === "/" || lead === "\\") a.slide = lead === "/" ? "up" : "down";
         else if (bIsNext && /h/i.test(tail)) a.hammer = true;
         else if (bIsNext && /p/i.test(tail)) a.pull = true;
       });
       arr.forEach(n => {
         const before = body.slice(Math.max(0, n.col - 3), n.col).replace(/\($/, "");
         const ch = before[before.length - 1];
-        if (ch === "/" || ch === "\\") { const prev = arr.filter(o => o.end <= n.col).pop(); if (!prev || !prev.slide) n.slideIn = true; }
+        if (ch === "/" || ch === "\\") { const prev = arr.filter(o => o.end <= n.col).pop(); if (!prev || !prev.slide) n.slideIn = ch === "/" ? "up" : "down"; }
       });
     });
     const all = per.flat();
@@ -1234,7 +1245,7 @@ function asciiToItems(text) {
       const evs = [];
       for (const n of notes) {
         const ev = evs.find(e => Math.abs(e.col - n.col) <= 1 && !e.notes.some(o => o.s === n.s));
-        const nn = { s: n.s, f: n.f }; ["ghost", "vib", "slide", "slideIn", "hammer", "pull"].forEach(k => { if (n[k]) nn[k] = true; });
+        const nn = { s: n.s, f: n.f }; ["ghost", "vib", "slide", "slideIn", "hammer", "pull"].forEach(k => { if (n[k]) nn[k] = n[k]; });
         if (ev) ev.notes.push(nn); else evs.push({ col: n.col, notes: [nn], rest: false });
       }
       const m = { kind: "m", events: [] };
