@@ -375,6 +375,47 @@ function undo() {
   toast("Nichts mehr rückgängig zu machen");
 }
 
+// ======================= measure clipboard =======================
+const CLIP_KEY = "bassTabApp.clip";
+function getClip() { try { return JSON.parse(localStorage.getItem(CLIP_KEY)); } catch (e) { return null; } }
+function copyMeasures(count) {
+  const items = song().items, tsArr = tsList(items);
+  const out = [];
+  for (let ii = cur.ii; ii < items.length && out.length < count; ii++) {
+    const it = items[ii];
+    if (it.kind !== "m") continue;                       // section recalls are skipped
+    const c = JSON.parse(JSON.stringify(it));
+    delete c.section; delete c.repStart; delete c.repEnd; // pasted without name / repeat marks
+    c.ts = tsArr[ii];                                      // remember the time signature of each measure
+    out.push(c);
+  }
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify(out)); } catch (e) {}
+  return out.length;
+}
+function pasteMeasures() {
+  const clip = getClip();
+  if (!clip || !clip.length) { toast("Zwischenablage ist leer"); return 0; }
+  const items = song().items;
+  const tsArr = tsList(items);
+  const at = cur.ii + 1;
+  const before = tsArr[cur.ii] || { num: 4, den: 4 };
+  const nextIt = items[at];
+  const nextTs = nextIt ? tsArr[at] : null;
+  // keep explicit time signatures only where they change
+  let prev = before;
+  const copies = clip.map(c => {
+    const m = JSON.parse(JSON.stringify(c));
+    if (m.ts && m.ts.num === prev.num && m.ts.den === prev.den) delete m.ts;
+    else if (m.ts) prev = m.ts;
+    return m;
+  });
+  items.splice(at, 0, ...copies);
+  // the measure after the pasted block keeps its previous time signature
+  if (nextIt && nextIt.kind === "m" && !nextIt.ts && nextTs && (nextTs.num !== prev.num || nextTs.den !== prev.den)) nextIt.ts = nextTs;
+  cur.ii = at + copies.length - 1; cur.ei = items[cur.ii].events.length; cur.ins = true; cur.recall = false;
+  return copies.length;
+}
+
 // ======================= display building =======================
 function sectionItems(items, name) {
   const key = name.toLowerCase();
@@ -888,6 +929,8 @@ function measureDialog() {
       touched(); close();
     };
     const structural = fn => () => { snapshot(); fn(); clampCursor(); touched(); close(); };
+    const clip = getClip();
+    const copyCnt = h("select", {}, [1, 2, 3, 4, 6, 8, 12, 16].map(n => h("option", { value: String(n), selected: n === 1 }, n === 1 ? "1 Takt" : `${n} Takte`)));
     const recSel = h("select", {}, sections.length ? opts(sections, sections[0]) : h("option", { value: "" }, "– noch keine Abschnitte –"));
     const recCnt = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8], 1));
     d.append(
@@ -910,6 +953,12 @@ function measureDialog() {
         h("button", { className: "b", on: { click: structural(() => { items.splice(cur.ii + 1, 0, JSON.parse(JSON.stringify(m))); delete items[cur.ii + 1].section; cur.ii++; cur.ei = 0; cur.ins = true; }) } }, "Takt duplizieren"),
         h("button", { className: "b red", on: { click: structural(() => { m.events = []; cur.ei = 0; }) } }, "Takt leeren"),
         h("button", { className: "b red", on: { click: structural(() => { items.splice(cur.ii, 1); if (!items.length) items.push({ kind: "m", events: [] }); cur.ii = Math.max(0, cur.ii - 1); cur.ei = 0; }) } }, "Takt löschen")),
+      h("h3", {}, "Kopieren & Einfügen"),
+      h("div", { className: "r" }, h("label", {}, "Ab diesem Takt"), copyCnt,
+        h("button", { className: "b", on: { click: () => { const n = copyMeasures(+copyCnt.value); close(); toast(`${n} Takt${n === 1 ? "" : "e"} kopiert`); } } }, "Kopieren"),
+        h("button", { className: "b", disabled: !(clip && clip.length), on: { click: () => { snapshot(); const n = pasteMeasures(); clampCursor(); touched(); close(); if (n) toast(`${n} Takt${n === 1 ? "" : "e"} eingefügt`); } } },
+          clip && clip.length ? `Einfügen danach (${clip.length})` : "Einfügen danach")),
+      h("div", { className: "hint" }, "Kopiert die gewählte Anzahl Takte ab hier (ohne Abschnittsnamen und Wiederholungszeichen). Die Zwischenablage bleibt erhalten – auch für andere Songs."),
       h("h3", {}, "Abschnitt erneut spielen (nach diesem Takt)"),
       h("div", { className: "r" }, recSel, recCnt, h("span", {}, "×"),
         h("button", { className: "b", disabled: !sections.length, on: { click: structural(() => { items.splice(cur.ii + 1, 0, { kind: "recall", name: recSel.value, count: +recCnt.value }); cur.ii++; }) } }, "Einfügen"))
@@ -948,7 +997,7 @@ function helpDialog() {
       p("Eine vorhandene Note antippen = auswählen. Dann ändern Ziffern den Bund, Notenwert-Knöpfe den Rhythmus, ⌫ löscht sie. Zwischen zwei Noten tippen = dort einfügen. Akkord: Note antippen, andere Saite wählen, Ziffer tippen."),
       p("Haltebogen: Note eingeben, dann den Notenwert wählen, um den sie verlängert werden soll (z. B. 1/4), und „Halten ⌒“ tippen. Angezeigt wird ein Bogen, darunter der Rhythmus der Haltedauer. Mehrfach tippen verlängert weiter."),
       p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite."),
-      p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen und einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
+      p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen, mehrere Takte kopieren und an anderer Stelle einfügen sowie einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
       p("„Lesen“ zeigt das Blatt ohne Eingabefeld – dort auch Wiederholungen ausgeschrieben und Drucken. ↶ macht den letzten Schritt rückgängig."),
       h("div", { className: "r" }, h("button", { className: "b pri", on: { click: close } }, "OK")));
   });
