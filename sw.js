@@ -1,5 +1,5 @@
 // Offline cache for Bass Tabs. Bump VERSION after every update so the iPad fetches the new files.
-const VERSION = "bass-tabs-v6";
+const VERSION = "bass-tabs-v7";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", e => {

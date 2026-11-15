@@ -461,11 +461,20 @@ function sectionItems(items, name) {
   }
   return out;
 }
+// measures of a recalled section, optionally only a part (from/to = 1-based measure numbers within the section)
+function recallPart(items, it) {
+  const all = sectionItems(items, it.name);
+  if (!all.length) return { sec: [], f: 0, t: 0, partial: false, len: 0 };
+  const f = Math.max(1, Math.min(all.length, it.from || 1));
+  const t = Math.max(f, Math.min(all.length, it.to || all.length));
+  return { sec: all.slice(f - 1, t), f, t, partial: f > 1 || t < all.length, len: all.length, name: all[0].secName };
+}
+function recallTitle(rp) { return rp.name + (rp.partial ? ` (T. ${rp.f}–${rp.t})` : ""); }
 function buildDisplay(items, repMode) {
   if (repMode !== "expand") {
     return items.map((it, ii) => it.kind === "m"
       ? { m: it, ii, section: it.section || null, repStart: !!it.repStart, repEnd: it.repEnd || 0 }
-      : (sectionItems(items, it.name).length ? { kind: "recall", ii, name: it.name, count: it.count || 1 } : { kind: "missing", ii, name: it.name }));
+      : (sectionItems(items, it.name).length ? { kind: "recall", ii, it, name: it.name, count: it.count || 1 } : { kind: "missing", ii, name: it.name }));
   }
   const all = items.map((it, ii) => ({ it, ii }));
   const expand = (list, depth, noRepeat) => {
@@ -474,13 +483,15 @@ function buildDisplay(items, repMode) {
     while (i < list.length) {
       const { it, ii } = list[i];
       if (it.kind !== "m") {
-        const sec = depth < 4 ? sectionItems(items, it.name) : [];
+        const rp = depth < 4 ? recallPart(items, it) : { sec: [] };
+        const sec = rp.sec;
         if (!sec.length) { out.push({ kind: "missing", ii, name: it.name }); i++; continue; }
         const count = it.count || 1;
         for (let k = 1; k <= count; k++) {
           const part = expand(sec.map(x => ({ it: x.it, ii: x.ii })), depth + 1, false);
+          part.forEach(p => { p.via = ii; if (p.m) p.section = null; });   // played via this recall
           const first = part.find(p => p.m);
-          if (first) first.section = sec[0].secName + (count > 1 ? ` (${k}/${count})` : "");
+          if (first) first.section = recallTitle(rp) + (count > 1 ? ` ${k}/${count}` : "");
           out.push(...part);
         }
         i++; continue;
@@ -524,6 +535,7 @@ function el(name, attrs, parent, text) {
 }
 
 let geo = [];   // hit-test geometry for the edit mode
+let playedFirst = new Map();   // item index -> first played measure number (for dialogs)
 function render() {
   const sg = song();
   clampCursor();
@@ -548,17 +560,40 @@ function render() {
   const names = stringNames(sg);
   const display = buildDisplay(items, editing ? "signs" : (mode === "play" ? "expand" : db.settings.repMode));
 
+  // measure numbers "as played": count through the written-out song
+  const played = new Map(), viaNos = new Map();
+  let pn = 1;
+  for (const e of buildDisplay(items, "expand")) {
+    if (!e.m) continue;
+    const map = e.via !== undefined ? viaNos : played, key = e.via !== undefined ? e.via : e.ii;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(pn++);
+  }
+  playedFirst = new Map([...played].map(([k, v]) => [k, v[0]]));
+  const expanded = !editing && (mode === "play" || db.settings.repMode === "expand");
+
   // render measures
   const out = $("out"); out.innerHTML = "";
   geo = [];
   const rms = [];
   let no = 1, prevTs = null, forceTs = true;
-  const firstNo = new Map();
+  const firstNo = playedFirst;
   for (const dsp of display) {
     if (!dsp.m) { rms.push(dsp); forceTs = true; continue; }
     const ts = tsArr[dsp.ii];
+    let num = no++, noLabel = null;
+    if (!expanded) {
+      num = (played.get(dsp.ii) || [num])[0];
+      if (dsp.repStart) {                       // repeat block: show the played range, e.g. "5–12"
+        let j = dsp.ii;
+        while (j < items.length && !(items[j].kind === "m" && items[j].repEnd)) j++;
+        let last = num;
+        for (let k = dsp.ii; k <= Math.min(j, items.length - 1); k++) (played.get(k) || []).forEach(v => { if (v > last) last = v; });
+        if (last > num) noLabel = `${num}–${last}`;
+      }
+    }
     const rm = {
-      ii: dsp.ii, src: dsp.m, ts, no: no++, names, nS: names.length,
+      ii: dsp.ii, src: dsp.m, ts, no: num, noLabel, names, nS: names.length,
       section: dsp.section, repStart: !!dsp.repStart, repEnd: dsp.repEnd || 0, passLabel: dsp.passLabel || null,
       editing: editing && dsp.ii === cur.ii,
       events: dsp.m.events.map((e, ei) => ({ ei, src: e, base: e.base, dotted: e.dotted, tup: e.tup || 0, rest: e.rest || !e.notes.length, dur: evDur(e),
@@ -567,7 +602,6 @@ function render() {
     rm.total = rm.events.reduce((a, e) => a + e.dur, 0);
     rm.showTs = forceTs || !prevTs || prevTs.num !== ts.num || prevTs.den !== ts.den;
     prevTs = ts; forceTs = false;
-    if (!firstNo.has(dsp.ii)) firstNo.set(dsp.ii, rm.no);
     rms.push(rm);
   }
 
@@ -597,10 +631,10 @@ function render() {
     div.className = "recall" + (it.kind === "missing" ? " missing" : "") + (editing && cur.recall && cur.ii === it.ii ? " sel" : "");
     if (it.kind === "missing") div.textContent = `⚠ Abschnitt „${it.name}“ nicht gefunden`;
     else {
-      const sec = sectionItems(items, it.name);
-      const nos = sec.map(x => firstNo.get(x.ii)).filter(v => v !== undefined);
+      const rp = recallPart(items, it.it);
+      const nos = viaNos.get(it.ii) || [];
       div.innerHTML = `<span class="sym">↻</span> <b></b>${it.count > 1 ? ` <b>${it.count}×</b>` : ""} spielen <span class="rng"></span>`;
-      div.querySelector("b").textContent = sec[0].secName;
+      div.querySelector("b").textContent = recallTitle(rp);
       div.querySelector(".rng").textContent = nos.length ? `(Takt ${Math.min(...nos)}–${Math.max(...nos)})` : "";
     }
     if (editing) div.onclick = () => { cur.ii = it.ii; cur.recall = true; cur.ei = 0; cur.ins = false; render(); };
@@ -668,9 +702,10 @@ function drawRow(out, row, widths, W, rowIdx) {
     }
     const over = m.total > capOf(m.ts) + 1e-3;
     const noX = mx - 2 + (mi > 0 && row[mi - 1].repEnd ? 8 : 0);
-    el("text", { x: noX, y: staffTop - 12, "font-size": 12, fill: over ? "#c0262d" : "#a8a8a8", "font-weight": over ? 700 : 400 }, svg, String(m.no));
+    const noTxt = m.noLabel || String(m.no);
+    el("text", { x: noX, y: staffTop - 12, "font-size": 12, fill: over ? "#c0262d" : "#a8a8a8", "font-weight": over ? 700 : 400 }, svg, noTxt);
     if (m.passLabel) {
-      const tx = noX + 10 + String(m.no).length * 7;
+      const tx = noX + 10 + noTxt.length * 7;
       el("rect", { x: tx, y: staffTop - 24, width: 52, height: 16, rx: 8, fill: "#ececec" }, svg);
       el("text", { x: tx + 26, y: staffTop - 12.5, "font-size": 11, "font-weight": 600, "text-anchor": "middle", fill: "#555" }, svg, `Wdh. ${m.passLabel}`);
     }
@@ -937,10 +972,19 @@ function measureDialog() {
     const it = items[cur.ii];
     openDialog((d, close) => {
       const cnt = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8], it.count || 1));
+      const len = sectionItems(items, it.name).length || 1;
+      const nums = Array.from({ length: len }, (_, i) => i + 1);
+      const fSel = h("select", {}, opts(nums, it.from || 1)), tSel = h("select", {}, opts(nums, it.to || len));
       d.append(h("h2", {}, `Abschnitt-Aufruf „${it.name}“`),
+        h("div", { className: "r" }, h("label", {}, "Takt"), fSel, h("span", {}, "bis"), tSel, h("span", { className: "hint" }, `(von ${len} Takten)`)),
         h("div", { className: "r" }, h("label", {}, "Wie oft:", cnt)),
         h("div", { className: "r" },
-          h("button", { className: "b pri", on: { click: () => { snapshot(); it.count = +cnt.value; touched(); close(); } } }, "Übernehmen"),
+          h("button", { className: "b pri", on: { click: () => {
+            snapshot(); it.count = +cnt.value;
+            let f = +fSel.value, t = +tSel.value; if (t < f) [f, t] = [t, f];
+            if (f > 1) it.from = f; else delete it.from;
+            if (t < len) it.to = t; else delete it.to;
+            touched(); close(); } } }, "Übernehmen"),
           h("button", { className: "b red", on: { click: () => { snapshot(); items.splice(cur.ii, 1); clampCursor(); touched(); close(); } } }, "Aufruf löschen"),
           h("button", { className: "b", on: { click: close } }, "Schließen")));
     });
@@ -948,7 +992,7 @@ function measureDialog() {
   }
   const m = curMeasure();
   const tsEff = tsList(items)[cur.ii];
-  const no = items.slice(0, cur.ii + 1).filter(x => x.kind === "m").length;
+  const no = playedFirst.get(cur.ii) || items.slice(0, cur.ii + 1).filter(x => x.kind === "m").length;
   const sections = [...new Set(items.filter(x => x.kind === "m" && x.section).map(x => x.section))];
   openDialog((d, close) => {
     const tsOn = h("input", { type: "checkbox", checked: !!m.ts });
@@ -970,6 +1014,13 @@ function measureDialog() {
     const copyCnt = h("select", {}, [1, 2, 3, 4, 6, 8, 12, 16].map(n => h("option", { value: String(n), selected: n === 1 }, n === 1 ? "1 Takt" : `${n} Takte`)));
     const recSel = h("select", {}, sections.length ? opts(sections, sections[0]) : h("option", { value: "" }, "– noch keine Abschnitte –"));
     const recCnt = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8], 1));
+    const recFrom = h("select"), recTo = h("select");
+    const fillRange = () => {
+      const len = sections.length ? sectionItems(items, recSel.value).length : 0;
+      const nums = Array.from({ length: Math.max(1, len) }, (_, i) => i + 1);
+      recFrom.replaceChildren(...opts(nums, 1)); recTo.replaceChildren(...opts(nums, nums.length));
+    };
+    recSel.addEventListener("change", fillRange); fillRange();
     d.append(
       h("h2", {}, `Takt ${no}`),
       h("h3", {}, "Taktart"),
@@ -997,8 +1048,14 @@ function measureDialog() {
           clip && clip.length ? `Einfügen danach (${clip.length})` : "Einfügen danach")),
       h("div", { className: "hint" }, "Kopiert die gewählte Anzahl Takte ab hier (ohne Abschnittsnamen und Wiederholungszeichen). Die Zwischenablage bleibt erhalten – auch für andere Songs."),
       h("h3", {}, "Abschnitt erneut spielen (nach diesem Takt)"),
-      h("div", { className: "r" }, recSel, recCnt, h("span", {}, "×"),
-        h("button", { className: "b", disabled: !sections.length, on: { click: structural(() => { items.splice(cur.ii + 1, 0, { kind: "recall", name: recSel.value, count: +recCnt.value }); cur.ii++; }) } }, "Einfügen"))
+      h("div", { className: "r" }, recSel, h("label", {}, "Takt"), recFrom, h("span", {}, "bis"), recTo, recCnt, h("span", {}, "×"),
+        h("button", { className: "b", disabled: !sections.length, on: { click: structural(() => {
+          const len = sectionItems(items, recSel.value).length;
+          let f = +recFrom.value, t = +recTo.value; if (t < f) [f, t] = [t, f];
+          const rc = { kind: "recall", name: recSel.value, count: +recCnt.value };
+          if (f > 1) rc.from = f; if (t < len) rc.to = t;
+          items.splice(cur.ii + 1, 0, rc); cur.ii++; }) } }, "Einfügen")),
+      h("div", { className: "hint" }, "Takt von/bis bezieht sich auf die Takte innerhalb des Abschnitts – z. B. nur Takt 1–4 der Strophe.")
     );
   });
 }
@@ -1134,7 +1191,7 @@ function importAsciiDialog() {
     const ta = h("textarea", { placeholder: "ASCII-Tabs hier einfügen, z. B.\n\nG|----------------|\nD|----------------|\nA|----5---7-------|\nE|0-0-------0-----|" , spellcheck: false });
     const target = h("select", {}, h("option", { value: "new" }, "als neuen Song"), h("option", { value: "append" }, "an aktuellen Song anhängen"));
     d.append(h("h2", {}, "ASCII-Tabs importieren"), ta,
-      h("div", { className: "hint", style: "margin:6px 0 10px" }, "Takte über | trennen. Ohne Rhythmuszeile (R|) wird der Rhythmus aus den Abständen geschätzt – danach einfach per Touch korrigieren. Unterstützt auch [Abschnitt], {3/4}, M|-Zeile, :| x4, |: und {Abschnitt x2}."),
+      h("div", { className: "hint", style: "margin:6px 0 10px" }, "Takte über | trennen. Ohne Rhythmuszeile (R|) wird der Rhythmus aus den Abständen geschätzt – danach einfach per Touch korrigieren. Unterstützt auch [Abschnitt], {3/4}, M|-Zeile, :| x4, |:, {Abschnitt x2} und {Abschnitt 1-4 x2}."),
       h("div", { className: "r" }, target,
         h("button", { className: "b pri", on: { click: () => {
           const res = asciiToItems(ta.value);
@@ -1161,7 +1218,7 @@ function importAsciiDialog() {
 function asciiToItems(text) {
   const strRe = /^\s*([A-Ga-g][#b]?)\s*(\|.*)$/, rRe = /^\s*[Rr]\s*(\|.*)$/, mRe = /^\s*[Mm]\s*(\|.*)$/;
   const secRe = /^\s*\[(.+)\]\s*$/, tsRe = /^\s*\{\s*(\d+)\s*\/\s*(\d+)\s*\}\s*$/;
-  const repOpenRe = /^\s*\|:\s*$/, repCloseRe = /^\s*:\|\s*(?:[xX×]?\s*(\d+)\s*[xX×]?)?\s*$/, recallRe = /^\s*\{\s*(.+?)\s*(?:[xX×]\s*(\d+))?\s*\}\s*$/;
+  const repOpenRe = /^\s*\|:\s*$/, repCloseRe = /^\s*:\|\s*(?:[xX×]?\s*(\d+)\s*[xX×]?)?\s*$/, recallRe = /^\s*\{\s*(.+?)\s*(?:(\d+)\s*[-–]\s*(\d+))?\s*(?:[xX×]\s*(\d+))?\s*\}\s*$/;
   const lines = text.replace(/\t/g, "    ").split(/\r?\n/);
   const items = [];
   let block = null, pendingSection = null, pendingTs = null, pendingOpen = false, openIdx = null, lastBlockIdx = null;
@@ -1306,7 +1363,11 @@ function asciiToItems(text) {
         openIdx = null;
       }
       else if ((m = raw.match(secRe))) pendingSection = m[1].trim();
-      else if ((m = raw.match(recallRe))) items.push({ kind: "recall", name: m[1].trim(), count: Math.max(1, m[2] ? +m[2] : 1) });
+      else if ((m = raw.match(recallRe))) {
+        const rc = { kind: "recall", name: m[1].trim(), count: Math.max(1, m[4] ? +m[4] : 1) };
+        if (m[2]) { rc.from = Math.min(+m[2], +m[3]); rc.to = Math.max(+m[2], +m[3]); }
+        items.push(rc);
+      }
     }
   }
   flush();
