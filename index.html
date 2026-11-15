@@ -83,6 +83,21 @@
   .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--panel-h) + 20px); background: rgba(29,29,31,.92); color:#fff; padding: 8px 14px; border-radius: 10px; font-size: 14px; z-index: 60; opacity: 0; transition: opacity .2s; pointer-events:none; }
   .toast.show { opacity: 1; }
 
+  /* ---------- play mode ---------- */
+  .play { position: fixed; inset: 0; z-index: 40; background:#fff; display:none; flex-direction:column;
+          padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); user-select:none; -webkit-user-select:none; }
+  body.playing .play { display:flex; }
+  body.playing .top, body.playing .panel { display:none !important; }
+  .pslot { flex: 1 1 0; min-height: 0; overflow: hidden; padding: 8px 18px 4px 22px; position: relative; }
+  .pslot svg { display:block; width:100%; height:auto; margin-bottom: 4px; }
+  .pslot .recall { margin-left: 44px; }
+  .pslot.cur::before { content:""; position:absolute; left:6px; top:12px; bottom:12px; width:5px; border-radius:3px; background: var(--blue); opacity:.55; }
+  .pslot .pend { color:#aaa; font-size: 18px; text-align:center; padding-top: 40px; }
+  .psep { height: 0; border-top: 2px dashed #d6d6d6; margin: 0 14px; flex: none; }
+  .pctl { position:absolute; top: calc(env(safe-area-inset-top) + 6px); right: 10px; display:flex; gap:6px; align-items:center; z-index: 2; }
+  .pctl button { height: 36px; min-width: 40px; border-radius: 9px; border:1px solid #ddd; background: rgba(255,255,255,.9); font-size: 15px; color:#555; }
+  .pctl .pinfo { font-size: 13px; color:#999; padding: 0 6px; }
+
   @media (max-width: 700px) {
     .k { height: 48px; font-size: 17px; min-width: 30px; }
     .k.num { font-size: 20px; }
@@ -91,7 +106,7 @@
   @media print {
     @page { size: A4; margin: 12mm; }
     body { background:#fff; }
-    .top, .panel, .modal, .toast, .warn { display:none !important; }
+    .top, .panel, .modal, .toast, .warn, .play { display:none !important; }
     #score { padding: 0 !important; }
     .page { box-shadow:none; padding:0; max-width:none; }
   }
@@ -103,10 +118,11 @@
   <button class="tb" id="bSongs">☰ Songs</button>
   <div class="ttl" id="ttl"></div>
   <select id="perRow" title="Takte pro Zeile"><option value="2">2 Takte</option><option value="3">3 Takte</option><option value="4">4 Takte</option><option value="5">5 Takte</option><option value="6">6 Takte</option></select>
-  <select id="zoom" title="Größe"><option value="0.85">klein</option><option value="1">normal</option><option value="1.2">groß</option><option value="1.45">sehr groß</option></select>
+  <select id="zoom" title="Größe"><option value="0.85">klein</option><option value="1">normal</option><option value="1.2">groß</option><option value="1.45">sehr groß</option><option value="1.75">XL</option><option value="2.1">XXL</option></select>
   <select id="repMode" class="read-only" title="Wiederholungen"><option value="signs">Wdh. als Zeichen</option><option value="expand">Wdh. ausgeschrieben</option></select>
   <button class="tb read-only" id="bPrint">Drucken</button>
   <button class="tb edit-only" id="bUndo" title="Rückgängig">↶</button>
+  <button class="tb" id="bPlay" title="Spielmodus: Vollbild, halbseitig blättern per Pedal oder Antippen">▶ Spielen</button>
   <button class="tb dark" id="bMode">Lesen</button>
 </div>
 
@@ -144,6 +160,13 @@
     <button class="k sm" id="bBar" title="Neuer Takt">+ Takt</button>
     <button class="k sm" id="bMeasure">Takt …</button>
   </div>
+</div>
+
+<div class="play" id="play">
+  <div class="pctl"><span class="pinfo" id="pInfo"></span><button id="pSmaller">A−</button><button id="pBigger">A+</button><button id="pExit">✕</button></div>
+  <div class="pslot" id="ps0"></div>
+  <div class="psep"></div>
+  <div class="pslot" id="ps1"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -497,7 +520,8 @@ let geo = [];   // hit-test geometry for the edit mode
 function render() {
   const sg = song();
   clampCursor();
-  document.body.classList.toggle("reading", mode === "read");
+  document.body.classList.toggle("reading", mode !== "edit");
+  document.body.classList.toggle("playing", mode === "play");
   $("bMode").textContent = mode === "read" ? "Bearbeiten" : "Lesen";
   $("ttl").innerHTML = "";
   $("ttl").append(sg.title || "Ohne Titel");
@@ -515,7 +539,7 @@ function render() {
   const items = sg.items;
   const tsArr = tsList(items);
   const names = stringNames(sg);
-  const display = buildDisplay(items, editing ? "signs" : db.settings.repMode);
+  const display = buildDisplay(items, editing ? "signs" : (mode === "play" ? "expand" : db.settings.repMode));
 
   // render measures
   const out = $("out"); out.innerHTML = "";
@@ -590,6 +614,7 @@ function render() {
 
   updatePanel();
   if (editing) scrollCursorIntoView();
+  if (mode === "play") buildPlay();
 }
 
 function drawRow(out, row, widths, W, rowIdx) {
@@ -602,6 +627,7 @@ function drawRow(out, row, widths, W, rowIdx) {
   const anyTup = row.some(m => m.events.some(e => e.tup));
   const H = staffBot + (anyTup ? 70 : 56);
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, "font-family": "-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif" });
+  svg.dataset.first = row[0].no; svg.dataset.vw = W; svg.dataset.vh = H;
   out.appendChild(svg);
 
   const x0 = LEFT, x1 = LEFT + widths.reduce((a, b) => a + b, 0);
@@ -998,6 +1024,7 @@ function helpDialog() {
       p("Haltebogen: Note eingeben, dann den Notenwert wählen, um den sie verlängert werden soll (z. B. 1/4), und „Halten ⌒“ tippen. Angezeigt wird ein Bogen, darunter der Rhythmus der Haltedauer. Mehrfach tippen verlängert weiter."),
       p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite."),
       p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen, mehrere Takte kopieren und an anderer Stelle einfügen sowie einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
+      p("„▶ Spielen“: Vollbild mit halbseitigem Umblättern – die gerade freie Bildschirmhälfte zeigt schon die Fortsetzung (blauer Balken = hier weiterlesen). Weiter per Pedal (Pfeiltasten, Bild ab, Leertaste) oder Antippen rechts, zurück per Pedal oder Antippen im linken Drittel. Wiederholungen sind ausgeschrieben, A−/A+ ändert die Größe, ✕ beendet. Der Bildschirm bleibt an."),
       p("„Lesen“ zeigt das Blatt ohne Eingabefeld – dort auch Wiederholungen ausgeschrieben und Drucken. ↶ macht den letzten Schritt rückgängig."),
       h("div", { className: "r" }, h("button", { className: "b pri", on: { click: close } }, "OK")));
   });
@@ -1274,6 +1301,96 @@ function asciiToItems(text) {
   flush();
   return { items, tuning, nS, estimated };
 }
+
+// ======================= play mode (half-page turning) =======================
+let prevMode = "read", playPos = 0, playChunks = [], playAnchor = null, wakeLock = null;
+function buildPlay() {
+  const slot = $("ps0");
+  const slotW = slot.clientWidth - 40;                       // minus padding
+  const slotH = slot.clientHeight - 12;
+  const blocks = [];
+  // header (title) as first block
+  const hdr = $("hdr").cloneNode(true); hdr.removeAttribute("id");
+  blocks.push({ node: hdr, h: $("hdr").offsetHeight * (slotW / Math.max(1, $("out").clientWidth)) + 4, first: 1 });
+  for (const n of $("out").children) {
+    if (n.tagName.toLowerCase() === "svg") blocks.push({ node: n, h: (+n.dataset.vh / +n.dataset.vw) * slotW + 4, first: +n.dataset.first });
+    else blocks.push({ node: n, h: n.offsetHeight + 18, first: null });
+  }
+  // pack blocks into half-page chunks
+  playChunks = [];
+  let curC = null;
+  for (const b of blocks) {
+    if (!curC || (curC.h + b.h > slotH && curC.nodes.length)) { curC = { nodes: [], h: 0, first: null }; playChunks.push(curC); }
+    curC.nodes.push(b.node); curC.h += b.h;
+    if (curC.first === null && b.first !== null) curC.first = b.first;
+  }
+  // keep position after re-layout (resize, size change)
+  if (playAnchor !== null) {
+    let idx = 0;
+    playChunks.forEach((c, i) => { if (c.first !== null && c.first <= playAnchor) idx = i; });
+    playPos = idx;
+  }
+  playPos = Math.max(0, Math.min(playPos, playChunks.length - 1));
+  showPlay();
+}
+function showPlay() {
+  for (let s = 0; s < 2; s++) {
+    const i = playPos % 2 === s ? playPos : playPos + 1;     // chunk i always lives in slot i % 2
+    const el2 = $("ps" + s);
+    el2.innerHTML = "";
+    const c = playChunks[i];
+    if (c) c.nodes.forEach(n => el2.appendChild(n.cloneNode(true)));
+    else if (i === playChunks.length) { const d = document.createElement("div"); d.className = "pend"; d.textContent = "— Ende —"; el2.appendChild(d); }
+    el2.classList.toggle("cur", i === playPos);
+  }
+  const c = playChunks[playPos];
+  playAnchor = c && c.first !== null ? c.first : playAnchor;
+  $("pInfo").textContent = `${playPos + 1} / ${playChunks.length}`;
+}
+function playTurn(dir) {
+  const np = Math.max(0, Math.min(playChunks.length - 1, playPos + dir));
+  if (np === playPos) return;
+  playPos = np; showPlay();
+}
+async function enterPlay() {
+  if (mode !== "play") prevMode = mode;
+  mode = "play"; playPos = 0; playAnchor = null;
+  if (document.activeElement) document.activeElement.blur();
+  render();
+  try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+function exitPlay() {
+  mode = prevMode === "play" ? "read" : prevMode;
+  try { if (wakeLock) wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+  render(); window.scrollTo(0, 0);
+}
+document.addEventListener("visibilitychange", async () => {
+  if (mode === "play" && document.visibilityState === "visible") { try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+});
+// page-turner pedals act as Bluetooth keyboards: cover all common key modes
+const NEXT_KEYS = ["ArrowRight", "ArrowDown", "PageDown", " ", "Spacebar", "Enter", "Right", "Down"];
+const PREV_KEYS = ["ArrowLeft", "ArrowUp", "PageUp", "Backspace", "Left", "Up"];
+document.addEventListener("keydown", e => {
+  if (mode !== "play") return;
+  if (NEXT_KEYS.includes(e.key)) { e.preventDefault(); playTurn(1); }
+  else if (PREV_KEYS.includes(e.key)) { e.preventDefault(); playTurn(-1); }
+  else if (e.key === "Escape") { e.preventDefault(); exitPlay(); }
+});
+$("play").addEventListener("click", e => {
+  if (e.target.closest(".pctl")) return;
+  if (e.clientX < window.innerWidth / 3) playTurn(-1); else playTurn(1);
+});
+$("pExit").onclick = exitPlay;
+const zoomSteps = ["0.85", "1", "1.2", "1.45", "1.75", "2.1"];
+function playZoom(d) {
+  let i = zoomSteps.indexOf(db.settings.zoom); if (i < 0) i = 1;
+  i = Math.max(0, Math.min(zoomSteps.length - 1, i + d));
+  db.settings.zoom = zoomSteps[i]; $("zoom").value = db.settings.zoom; save(); render();
+}
+$("pSmaller").onclick = () => playZoom(-1);
+$("pBigger").onclick = () => playZoom(1);
+$("bPlay").onclick = enterPlay;
 
 // ======================= misc =======================
 let toastTimer = null;
