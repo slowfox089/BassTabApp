@@ -965,6 +965,36 @@ function h(tag, attrs, ...kids) {
 }
 function opts(values, selected) { return values.map(v => h("option", { value: String(v), selected: String(v) === String(selected) }, String(v))); }
 
+// UI block: insert a section recall / empty measure / clipboard after the current item
+function insertAfterUI(items, close) {
+  const sections = [...new Set(items.filter(x => x.kind === "m" && x.section).map(x => x.section))];
+  const recSel = h("select", {}, sections.length ? opts(sections, sections[sections.length - 1]) : h("option", { value: "" }, "– noch keine Abschnitte –"));
+  const recCnt = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8], 1));
+  const recFrom = h("select"), recTo = h("select");
+  const fillRange = () => {
+    const len = sections.length ? sectionItems(items, recSel.value).length : 0;
+    const nums = Array.from({ length: Math.max(1, len) }, (_, i) => i + 1);
+    recFrom.replaceChildren(...opts(nums, 1)); recTo.replaceChildren(...opts(nums, nums.length));
+  };
+  recSel.addEventListener("change", fillRange); fillRange();
+  const done = fn => () => { snapshot(); fn(); clampCursor(); touched(); close(); };
+  const clip = getClip();
+  return [
+    h("h3", {}, "Abschnitt erneut spielen (danach einfügen)"),
+    h("div", { className: "r" }, recSel, h("label", {}, "Takt"), recFrom, h("span", {}, "bis"), recTo, recCnt, h("span", {}, "×"),
+      h("button", { className: "b pri", disabled: !sections.length, on: { click: done(() => {
+        const len = sectionItems(items, recSel.value).length;
+        let f = +recFrom.value, t = +recTo.value; if (t < f) [f, t] = [t, f];
+        const rc = { kind: "recall", name: recSel.value, count: +recCnt.value };
+        if (f > 1) rc.from = f; if (t < len) rc.to = t;
+        items.splice(cur.ii + 1, 0, rc); cur.ii++; cur.recall = true; cur.ei = 0; cur.ins = false; }) } }, "Einfügen")),
+    h("div", { className: "hint" }, "Takt von/bis bezieht sich auf die Takte innerhalb des Abschnitts – z. B. nur Takt 1–4 der Strophe."),
+    h("div", { className: "r", style: "margin-top:6px" },
+      h("button", { className: "b", on: { click: done(() => { items.splice(cur.ii + 1, 0, { kind: "m", events: [] }); cur.ii++; cur.ei = 0; cur.ins = true; cur.recall = false; }) } }, "Leeren Takt danach"),
+      h("button", { className: "b", disabled: !(clip && clip.length), on: { click: () => { snapshot(); const n = pasteMeasures(); clampCursor(); touched(); close(); if (n) toast(`${n} Takt${n === 1 ? "" : "e"} eingefügt`); } } },
+        clip && clip.length ? `Kopierte Takte danach (${clip.length})` : "Kopierte Takte danach"))
+  ];
+}
 function measureDialog() {
   clampCursor();
   const sg = song(), items = sg.items;
@@ -986,7 +1016,8 @@ function measureDialog() {
             if (t < len) it.to = t; else delete it.to;
             touched(); close(); } } }, "Übernehmen"),
           h("button", { className: "b red", on: { click: () => { snapshot(); items.splice(cur.ii, 1); clampCursor(); touched(); close(); } } }, "Aufruf löschen"),
-          h("button", { className: "b", on: { click: close } }, "Schließen")));
+          h("button", { className: "b", on: { click: close } }, "Schließen")),
+        ...insertAfterUI(items, close));
     });
     return;
   }
@@ -1012,15 +1043,6 @@ function measureDialog() {
     const structural = fn => () => { snapshot(); fn(); clampCursor(); touched(); close(); };
     const clip = getClip();
     const copyCnt = h("select", {}, [1, 2, 3, 4, 6, 8, 12, 16].map(n => h("option", { value: String(n), selected: n === 1 }, n === 1 ? "1 Takt" : `${n} Takte`)));
-    const recSel = h("select", {}, sections.length ? opts(sections, sections[0]) : h("option", { value: "" }, "– noch keine Abschnitte –"));
-    const recCnt = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8], 1));
-    const recFrom = h("select"), recTo = h("select");
-    const fillRange = () => {
-      const len = sections.length ? sectionItems(items, recSel.value).length : 0;
-      const nums = Array.from({ length: Math.max(1, len) }, (_, i) => i + 1);
-      recFrom.replaceChildren(...opts(nums, 1)); recTo.replaceChildren(...opts(nums, nums.length));
-    };
-    recSel.addEventListener("change", fillRange); fillRange();
     d.append(
       h("h2", {}, `Takt ${no}`),
       h("h3", {}, "Taktart"),
@@ -1047,15 +1069,7 @@ function measureDialog() {
         h("button", { className: "b", disabled: !(clip && clip.length), on: { click: () => { snapshot(); const n = pasteMeasures(); clampCursor(); touched(); close(); if (n) toast(`${n} Takt${n === 1 ? "" : "e"} eingefügt`); } } },
           clip && clip.length ? `Einfügen danach (${clip.length})` : "Einfügen danach")),
       h("div", { className: "hint" }, "Kopiert die gewählte Anzahl Takte ab hier (ohne Abschnittsnamen und Wiederholungszeichen). Die Zwischenablage bleibt erhalten – auch für andere Songs."),
-      h("h3", {}, "Abschnitt erneut spielen (nach diesem Takt)"),
-      h("div", { className: "r" }, recSel, h("label", {}, "Takt"), recFrom, h("span", {}, "bis"), recTo, recCnt, h("span", {}, "×"),
-        h("button", { className: "b", disabled: !sections.length, on: { click: structural(() => {
-          const len = sectionItems(items, recSel.value).length;
-          let f = +recFrom.value, t = +recTo.value; if (t < f) [f, t] = [t, f];
-          const rc = { kind: "recall", name: recSel.value, count: +recCnt.value };
-          if (f > 1) rc.from = f; if (t < len) rc.to = t;
-          items.splice(cur.ii + 1, 0, rc); cur.ii++; }) } }, "Einfügen")),
-      h("div", { className: "hint" }, "Takt von/bis bezieht sich auf die Takte innerhalb des Abschnitts – z. B. nur Takt 1–4 der Strophe.")
+      ...insertAfterUI(items, close)
     );
   });
 }
