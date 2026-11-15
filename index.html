@@ -223,6 +223,8 @@ function tsList(items) {
   return items.map(it => { if (it.kind === "m" && it.ts) curTs = it.ts; return curTs; });
 }
 const capOf = ts => ts.num * 4 / ts.den;
+const beatOfTs = ts => (ts.den === 8 && ts.num % 3 === 0) ? 1.5 : (ts.den >= 8 ? 1 : Math.min(1, 4 / ts.den));
+const chordSlots = ts => Math.max(1, Math.min(4, Math.ceil(capOf(ts) / beatOfTs(ts) - 1e-6)));
 const totalOf = m => m.events.reduce((a, e) => a + evDur(e), 0);
 function curItem() { return song().items[cur.ii]; }
 function curMeasure() { const it = curItem(); return it && it.kind === "m" ? it : null; }
@@ -594,6 +596,7 @@ function render() {
     }
     const rm = {
       ii: dsp.ii, src: dsp.m, ts, no: num, noLabel, names, nS: names.length,
+      chords: (dsp.m.chords || []).slice(0, chordSlots(ts)),
       section: dsp.section, repStart: !!dsp.repStart, repEnd: dsp.repEnd || 0, passLabel: dsp.passLabel || null,
       editing: editing && dsp.ii === cur.ii,
       events: dsp.m.events.map((e, ei) => ({ ei, src: e, base: e.base, dotted: e.dotted, tup: e.tup || 0, rest: e.rest || !e.notes.length, dur: evDur(e),
@@ -661,8 +664,10 @@ function render() {
 function drawRow(out, row, widths, W, rowIdx) {
   const nS = Math.max(...row.map(m => m.nS));
   const hasSection = row.some(m => m.section);
+  const hasChords = row.some(m => m.chords && m.chords.some(Boolean));
   const top = hasSection ? 28 : 0;
-  const staffTop = top + 30;
+  const chordY = top + 18;
+  const staffTop = top + (hasChords ? 24 : 0) + 30;
   const staffBot = staffTop + (nS - 1) * SP;
   const mid = (staffTop + staffBot) / 2;
   const anyTup = row.some(m => m.events.some(e => e.tup));
@@ -729,6 +734,18 @@ function drawRow(out, row, widths, W, rowIdx) {
     let cx = mx + 14 + tsOff, pos = 0;
     for (const e of m.events) { e.x = cx + 4; e.pos = pos; pos += e.dur; cx += slotW(e.dur) * inner / tot; }
     const appendX = m.events.length ? Math.min(mx + w - 12 - repR, m.events[m.events.length - 1].x + Math.max(26, 30 * unit)) : mx + 20 + tsOff;
+    if (m.chords && m.chords.some(Boolean)) {
+      // x position of a time point: on the note at that beat, otherwise interpolated between neighbours
+      const cap = capOf(m.ts), bt = beatOfTs(m.ts);
+      const pts = [{ t: 0, x: mx + 14 + tsOff }, ...m.events.map(e => ({ t: e.pos, x: e.x })), { t: cap, x: mx + w - 8 - repR }];
+      const xAt = t => {
+        const hit = m.events.find(e => Math.abs(e.pos - t) < 1e-6); if (hit) return hit.x;
+        let a = pts[0], b = pts[pts.length - 1];
+        for (const q of pts) { if (q.t <= t + 1e-6) a = q; if (q.t > t + 1e-6) { b = q; break; } }
+        return b.t > a.t ? a.x + (b.x - a.x) * (t - a.t) / (b.t - a.t) : a.x;
+      };
+      m.chords.forEach((c, k) => { if (c) el("text", { x: xAt(k * bt) - 4, y: chordY, "font-size": 15, "font-weight": 700, fill: "#1d1d1f" }, svg, c); });
+    }
 
     // notes and rests
     for (const e of m.events) {
@@ -1030,12 +1047,17 @@ function measureDialog() {
     const tsNum = h("select", {}, opts([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15], tsEff.num));
     const tsDen = h("select", {}, opts([2, 4, 8, 16], tsEff.den));
     const sec = h("input", { type: "text", value: m.section || "", placeholder: "z. B. Strophe, Refrain" });
+    const nCh = chordSlots(tsEff);
+    const chIn = Array.from({ length: nCh }, (_, k) => h("input", { type: "text", value: (m.chords || [])[k] || "", placeholder: `Schlag ${k + 1}`,
+      autocomplete: "off", autocorrect: "off", spellcheck: false, style: "flex:1;min-width:0;width:70px" }));
     const rs = h("input", { type: "checkbox", checked: !!m.repStart });
     const re = h("select", {}, h("option", { value: "0" }, "kein Ende"), [2, 3, 4, 5, 6, 7, 8].map(n => h("option", { value: String(n), selected: m.repEnd === n }, `Ende :| ${n}×`)));
     const apply = () => {
       snapshot();
       if (tsOn.checked) m.ts = { num: +tsNum.value, den: +tsDen.value }; else delete m.ts;
       const sv = sec.value.trim(); if (sv) m.section = sv; else delete m.section;
+      const ch = chIn.map(i => i.value.trim()); while (ch.length && !ch[ch.length - 1]) ch.pop();
+      if (ch.length) m.chords = ch; else delete m.chords;
       if (rs.checked) m.repStart = true; else delete m.repStart;
       if (+re.value) m.repEnd = +re.value; else delete m.repEnd;
       touched(); close();
@@ -1048,6 +1070,9 @@ function measureDialog() {
       h("h3", {}, "Taktart"),
       h("div", { className: "r" }, h("label", {}, tsOn, "Taktwechsel ab hier:"), tsNum, h("span", {}, "/"), tsDen),
       h("div", { className: "hint" }, `Aktuell gilt ${tsEff.num}/${tsEff.den}. Ohne Häkchen wird die vorige Taktart übernommen.`),
+      h("h3", {}, "Akkorde"),
+      h("div", { className: "r" }, ...chIn),
+      h("div", { className: "hint" }, `Ein Feld pro Schlag (${nCh} bei ${tsEff.num}/${tsEff.den}). Der Akkord steht über der Note auf diesem Schlag. Leere Felder bleiben frei.`),
       h("h3", {}, "Abschnitt"),
       h("div", { className: "r" }, h("label", {}, "Beginnt hier:"), sec),
       h("h3", {}, "Wiederholung"),
@@ -1107,6 +1132,7 @@ function helpDialog() {
       p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite. Slide-Knöpfe mehrfach tippen: ↗ aufwärts → ↘ abwärts → aus."),
       p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen, mehrere Takte kopieren und an anderer Stelle einfügen sowie einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
       p("„▶ Spielen“: Vollbild mit halbseitigem Umblättern – die gerade freie Bildschirmhälfte zeigt schon die Fortsetzung (blauer Balken = hier weiterlesen). Weiter per Pedal (Pfeiltasten, Bild ab, Leertaste) oder Antippen rechts, zurück per Pedal oder Antippen im linken Drittel. Wiederholungen sind ausgeschrieben, A−/A+ ändert die Größe, ✕ beendet. Der Bildschirm bleibt an."),
+      p("Akkorde: „Takt …“ → Akkorde – ein Feld pro Schlag (bis zu 4). Sie erscheinen über dem Takt, auch beim Drucken und im Spielmodus."),
       p("„Lesen“ zeigt das Blatt ohne Eingabefeld – dort auch Wiederholungen ausgeschrieben und Drucken. ↶ macht den letzten Schritt rückgängig."),
       h("div", { className: "r" }, h("button", { className: "b pri", on: { click: close } }, "OK")));
   });
