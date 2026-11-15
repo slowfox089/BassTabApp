@@ -126,7 +126,8 @@
       <button class="k sm" id="bTup" title="Triole">3</button>
     </div>
     <div class="sep"></div>
-    <button class="k sm wide" id="bRest" style="flex:1.4">Pause</button>
+    <button class="k sm wide" id="bRest" style="flex:1.2">Pause</button>
+    <button class="k sm wide" id="bTie" style="flex:1.2" title="Haltebogen: vorige Note um den gewählten Notenwert verlängern">Halten ⌒</button>
   </div>
   <div class="prow" id="numRow"></div>
   <div class="prow">
@@ -236,7 +237,7 @@ function insertEvent(ev) {
 function setNote(ev, s, f) {
   ev.rest = false;
   const n = ev.notes.find(n => n.s === s);
-  if (n) n.f = f; else ev.notes.push({ s, f });
+  if (n) { n.f = f; delete n.tie; } else ev.notes.push({ s, f });
   ev.notes.sort((a, b) => a.s - b.s);
 }
 function syncSelFromEvent() {
@@ -267,6 +268,18 @@ function pressRest() {
   const ev = curEvent();
   if (ev) { ev.rest = true; ev.notes = []; }
   else insertEvent(newEvent(true));
+  lastDigit = null;
+  touched(); render();
+}
+function pressTie() {
+  clampCursor();
+  const base = techEvent();
+  if (!base || base.rest || !base.notes.length) { toast("Erst eine Note eingeben oder auswählen"); return; }
+  snapshot();
+  const ev = newEvent(false);
+  ev.notes = base.notes.map(n => ({ s: n.s, f: n.f, tie: true }));
+  if (!cur.ins) cur.ins = false;           // selected note: insert directly after it
+  insertEvent(ev);
   lastDigit = null;
   touched(); render();
 }
@@ -488,7 +501,7 @@ function render() {
 
   // flat order of note events for connections
   const flat = rms.filter(r => r.events).flatMap(r => r.events.filter(e => e.notes.length));
-  flat.forEach((e, i) => e.next = flat[i + 1] || null);
+  flat.forEach((e, i) => { e.next = flat[i + 1] || null; e.prev = flat[i - 1] || null; });
 
   const avail = W - LEFT - 6;
   let refScale = null;
@@ -612,6 +625,7 @@ function drawRow(out, row, widths, W, rowIdx) {
     for (const e of m.events) {
       for (const n of e.notes) {
         n.x = e.x; n.y = staffTop + n.s * SP; n.row = rowInfo;
+        if (n.tie) { n.half = 3; continue; }   // tied continuation: only arc + rhythm, no fret number
         let label = n.f; if (n.ghost) label = "(" + label + ")";
         const tw = 8 * label.length + 2; n.half = tw / 2;
         el("rect", { x: n.x - tw / 2, y: n.y - 7.5, width: tw, height: 15, fill: "#fff" }, gNotes);
@@ -651,6 +665,17 @@ function drawConnections(flat) {
     if (!e.row) continue;
     const g = e.row.gConn, nx = e.next, sameRow = nx && nx.row === e.row;
     for (const n of e.notes) {
+      if (n.tie) {
+        const pv = e.prev, pn = pv && pv.notes.find(o => o.s === n.s);
+        const samePrev = pn && pv.row === e.row;
+        const sx = samePrev ? pn.x + 2 : Math.max(LEFT + 2, n.x - 34), ex = n.x;
+        el("path", { d: `M${sx} ${n.y - 9} Q${(sx + ex) / 2} ${n.y - 21} ${ex} ${n.y - 9}`, ...ink, "stroke-width": 1.4 }, g);
+        if (pn && !samePrev && pv.row) {
+          // tie leaving the previous row: open arc to the row end
+          const rx = pv.row.x1 - 2;
+          el("path", { d: `M${pn.x + 2} ${pn.y - 9} Q${(pn.x + rx) / 2} ${pn.y - 21} ${rx} ${pn.y - 15}`, ...ink, "stroke-width": 1.4 }, pv.row.gConn);
+        }
+      }
       if (n.slideIn) {
         const bx = n.x - n.half - 1;
         el("line", { x1: bx - 16, x2: bx, y1: n.y + 3, y2: n.y - 3, ...ink }, g);
@@ -788,7 +813,7 @@ function buildPanel() {
   const bb = document.createElement("button"); bb.className = "k num"; bb.textContent = "⌫"; bb.onclick = pressBackspace; bb.style.flexGrow = 1.4; nr.appendChild(bb);
   document.querySelectorAll("[data-dur]").forEach(b => b.onclick = () => setDur(b.dataset.dur));
   document.querySelectorAll("[data-tech]").forEach(b => b.onclick = () => toggleTech(b.dataset.tech));
-  $("bDot").onclick = toggleDot; $("bTup").onclick = toggleTup; $("bRest").onclick = pressRest;
+  $("bDot").onclick = toggleDot; $("bTup").onclick = toggleTup; $("bRest").onclick = pressRest; $("bTie").onclick = pressTie;
   $("bPrev").onclick = () => move(-1); $("bNext").onclick = () => move(1);
   $("bBar").onclick = newBar; $("bMeasure").onclick = measureDialog;
 }
@@ -921,6 +946,7 @@ function helpDialog() {
       p("Saite wählen (G D A E …), Notenwert wählen (1/1 … 1/16, • punktiert, 3 Triole), dann Bundnummer tippen. Der Cursor springt danach automatisch auf die nächste freie Stelle; ist der Takt voll, geht es im nächsten Takt weiter."),
       p("Bünde 10–24: erst 1 bzw. 2 und dann schnell (innerhalb ~1 Sekunde) die zweite Ziffer tippen."),
       p("Eine vorhandene Note antippen = auswählen. Dann ändern Ziffern den Bund, Notenwert-Knöpfe den Rhythmus, ⌫ löscht sie. Zwischen zwei Noten tippen = dort einfügen. Akkord: Note antippen, andere Saite wählen, Ziffer tippen."),
+      p("Haltebogen: Note eingeben, dann den Notenwert wählen, um den sie verlängert werden soll (z. B. 1/4), und „Halten ⌒“ tippen. Angezeigt wird ein Bogen, darunter der Rhythmus der Haltedauer. Mehrfach tippen verlängert weiter."),
       p("Slide ↗ / H / P / ~ / ( ) gelten für die ausgewählte Note bzw. die zuletzt eingegebene. Ein Slide endet immer an der nächsten Note, egal auf welcher Saite."),
       p("„Takt …“: Taktart, Abschnittsname, Wiederholung (|: … :| n×), Takte einfügen/löschen und einen Abschnitt später erneut aufrufen. „+ Takt“ beendet den aktuellen Takt vorzeitig."),
       p("„Lesen“ zeigt das Blatt ohne Eingabefeld – dort auch Wiederholungen ausgeschrieben und Drucken. ↶ macht den letzten Schritt rückgängig."),
