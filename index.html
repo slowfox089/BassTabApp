@@ -806,11 +806,11 @@ function drawRhythm(g, m, staffBot) {
   const inBeam = new Set(groups.filter(gr => gr.length > 1).flat());
   for (const e of evs) {
     if (e.rest) continue;
-    if (e.base === "w") { if (e.dotted) el("circle", { cx: e.x + 6, cy: y1 + 4, r: 1.6, stroke: "none" }, g); continue; }
+    if (e.base === "w") { if (e.dotted) el("circle", { cx: e.x + 6, cy: y1 + 4, r: 1.9, stroke: "none" }, g); continue; }
     const yb = e.base === "h" ? y1 + 14 : y2;
     el("line", { x1: e.x, x2: e.x, y1, y2: yb, "stroke-width": 1.4 }, g);
     if (!inBeam.has(e)) for (let k = 0; k < FLAGS[e.base]; k++) el("path", { d: `M${e.x} ${y2 - k * 6} c0.5 -2 7.5 -4 6.5 -13`, fill: "none", "stroke-width": 1.5 }, g);
-    if (e.dotted) el("circle", { cx: e.x + 5, cy: yb - 3, r: 1.6, stroke: "none" }, g);
+    if (e.dotted) el("circle", { cx: e.x + 5, cy: y1 + 4, r: 1.9, stroke: "none" }, g);   // dot at the top of the stem (never hidden by beams)
   }
   // tuplet brackets
   let i = 0;
